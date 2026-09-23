@@ -31,6 +31,28 @@ reach anything you did not publish.
 
 ---
 
+## The architecture
+
+What you build and host, what Fabric already gives you, and where a business
+user can actually reach it.
+
+![SQL MCP Server — design and consuming surfaces](docs/images/architecture.png)
+
+Two things this diagram is trying to make unavoidable:
+
+- **Nothing is consumable until you build the agent that fronts it.** The MCP
+  server is an endpoint, not a chat experience. Stage two is one such agent;
+  Copilot Studio and Foundry are others.
+- **The greyed tiles are not oversights.** A self-hosted MCP server cannot be
+  published into the Fabric chat experience, and it reaches Microsoft 365 Copilot
+  only indirectly, via a Copilot Studio agent. That is a real constraint of this
+  path and it is better known up front.
+
+The timings on it were measured against the seed in this repo — 8,000 accounts on
+an F2 capacity. Your numbers will differ; the shape should not.
+
+---
+
 ## The three stages
 
 Each stage is additive. Stop after any of them and nothing is missing or broken.
