@@ -1,0 +1,11 @@
+# Stage 1 - the MCP server, seed and helper scripts.
+pyodbc>=5.3.0
+python-dotenv>=1.2.0
+mcp>=1.26.0
+
+# Stage 2 - the natural-language demo app (python app.py).
+# Safe to install now; unused until you configure Azure OpenAI.
+fastapi>=0.120.0
+uvicorn>=0.40.0
+openai>=2.10.0
+azure-identity>=1.25.0
