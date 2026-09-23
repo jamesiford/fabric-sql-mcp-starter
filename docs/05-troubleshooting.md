@@ -214,6 +214,43 @@ dotnet tool install -g Microsoft.DataApiBuilder
 If it installs but is not found, your shell needs `~/.dotnet/tools` on `PATH`.
 Open a new terminal afterwards.
 
+### The container starts, then every query fails
+
+Read the log first — there are two different failures with similar symptoms:
+
+```bash
+az containerapp logs show --name sql-mcp-server --resource-group rg-sql-mcp --tail 60
+```
+
+**`Validation of user's permissions failed. Verify the user has the Read item
+permission.`**
+
+This is the **Fabric** permission layer, not SQL. The SQL grant has already
+worked; the identity still needs access to the Fabric workspace or item. See
+[04-deploy-to-azure.md, part 2](04-deploy-to-azure.md#part-2--the-fabric-item-permission).
+This step does not exist for Azure SQL, so it surprises people coming from that
+background.
+
+**`Login failed for user '<token-identified principal>'`** with no further
+detail
+
+The SQL grant has not run, or the user name does not match the container app
+name exactly.
+
+**`Login failed ... State:240`** with no permission message
+
+Usually the connection string. In Azure Container Apps use:
+
+```
+Authentication=Active Directory Managed Identity
+```
+
+not `Active Directory Default`. The Default chain works locally but does not
+reliably resolve a system-assigned identity inside a container.
+
+Remember to restart the revision after fixing permissions — Data API builder
+reads the schema once at startup and will not retry on its own.
+
 ### `/health` returns 403
 
 Expected when `host.mode` is `production` — Data API builder restricts the

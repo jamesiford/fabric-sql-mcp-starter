@@ -84,8 +84,12 @@ It is idempotent: re-run after a failure and it reuses whatever already exists.
 
 ### Grant the container access to your database
 
-The deployment creates a managed identity but **cannot grant it database
-access** — only a database admin can do that. This is the one manual step.
+The deployment creates a managed identity but **cannot grant it access** — only
+an admin can do that. This is the one manual step, and on Fabric it has **two
+parts**, which is the single most common reason a deployment starts and then
+fails.
+
+#### Part 1 — the SQL grant
 
 1. Open [`deploy/grant-managed-identity.sql`](../deploy/grant-managed-identity.sql)
 2. Replace `<MANAGED-IDENTITY-NAME>` with your app name (default: `sql-mcp-server`)
@@ -96,8 +100,54 @@ CREATE USER [sql-mcp-server] FROM EXTERNAL PROVIDER;
 ALTER ROLE db_datareader ADD MEMBER [sql-mcp-server];
 ```
 
-Until you do this, the container starts but every query fails with a login
-error. That is expected.
+#### Part 2 — the Fabric item permission
+
+> **This step does not exist for Azure SQL, and it is not in Microsoft's
+> quickstart.** Fabric has its own permission layer above SQL. Without it, the
+> container authenticates successfully and is then refused, with:
+>
+> ```
+> Login failed for user '<token-identified principal>'.
+> Reason: Validation of user's permissions failed.
+>         Verify the user has the Read item permission.
+> ```
+>
+> That message is easy to misread as a SQL problem. It is not — the SQL grant in
+> part 1 has already succeeded.
+
+In the Fabric portal: open the **workspace** → **Manage access** → **Add people
+or groups** → search for your container app's name (`sql-mcp-server`) → give it
+**Member** (or **Viewer** plus item-level Read if you prefer least privilege).
+
+Or via the REST API:
+
+```powershell
+$token = az account get-access-token --resource "https://api.fabric.microsoft.com" --query accessToken -o tsv
+$principalId = az containerapp identity show --name sql-mcp-server `
+    --resource-group rg-sql-mcp --query principalId --output tsv
+
+$body = @{
+  principal = @{ id = $principalId; type = "ServicePrincipal" }
+  role = "Member"
+} | ConvertTo-Json -Depth 4
+
+Invoke-RestMethod -Method POST `
+  -Uri "https://api.fabric.microsoft.com/v1/workspaces/<workspace-id>/roleAssignments" `
+  -Headers @{ Authorization = "Bearer $token"; "Content-Type" = "application/json" } `
+  -Body $body
+```
+
+Then restart the container so it retries the connection:
+
+```bash
+az containerapp revision restart --name sql-mcp-server \
+  --resource-group rg-sql-mcp \
+  --revision $(az containerapp revision list --name sql-mcp-server \
+      --resource-group rg-sql-mcp --query "[?properties.active]|[0].name" -o tsv)
+```
+
+> **Tenant setting:** your Fabric admin must have **"Service principals can use
+> Fabric APIs"** enabled. If the role assignment is rejected, that is usually why.
 
 ### Confirm it works
 

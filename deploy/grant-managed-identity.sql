@@ -1,7 +1,7 @@
 /*
     grant-managed-identity.sql
     ---------------------------------------------------------------------------
-    Give the deployed container permission to read your database.
+    PART 1 OF 2. Give the deployed container permission to read your database.
 
     Run this ONCE, after deploy.ps1 has created the container app, and run it
     as yourself - you need to be an admin on the database.
@@ -10,6 +10,22 @@
     by deploy.ps1. It is the container app's name, for example:
 
         sql-mcp-server
+
+    ------------------------------------------------------------------------
+    IF YOU ARE ON FABRIC SQL DATABASE, THIS IS NOT ENOUGH ON ITS OWN
+    ------------------------------------------------------------------------
+    Fabric has a permission layer above SQL. After running this you must also
+    give the same identity access to the Fabric workspace or item, or the
+    container will authenticate successfully and then be refused with:
+
+        Login failed for user '<token-identified principal>'.
+        Reason: Validation of user's permissions failed.
+                Verify the user has the Read item permission.
+
+    That message reads like a SQL problem. It is not - the grant below will
+    already have succeeded. See docs/04-deploy-to-azure.md, part 2.
+
+    For Azure SQL, SQL Managed Instance or SQL Server, this file is all you need.
 
     WHY THIS EXISTS
     The container authenticates to SQL as its own managed identity. That

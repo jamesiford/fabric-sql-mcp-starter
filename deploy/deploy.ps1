@@ -104,6 +104,29 @@ if (-not $account) {
 Ok "subscription: $($account.name)"
 Ok "identity    : $($account.user.name)"
 
+# The containerapp commands live in an extension that is not installed by
+# default. Installing it here saves a confusing failure four steps later.
+Step "Checking the Azure CLI containerapp extension"
+$ext = az extension list --query "[?name=='containerapp'].name" --output tsv 2>$null
+if ($ext) {
+    Ok "already installed"
+} else {
+    Ok "installing (one-off, takes a moment)"
+    az extension add --name containerapp --only-show-errors --output none 2>$null
+    Ok "installed"
+}
+
+# Container Apps needs these resource providers registered on the subscription.
+# Registration is idempotent and usually instant if already done.
+foreach ($rp in @("Microsoft.App", "Microsoft.OperationalInsights", "Microsoft.ContainerRegistry")) {
+    $state = az provider show --namespace $rp --query registrationState --output tsv 2>$null
+    if ($state -ne "Registered") {
+        Ok "registering $rp (this can take a minute)"
+        az provider register --namespace $rp --wait --output none 2>$null
+    }
+}
+Ok "resource providers registered"
+
 # ── 2. Resource group ────────────────────────────────────────────────────────
 
 Step "Resource group: $ResourceGroup"
@@ -170,11 +193,16 @@ if ($acaEnv) {
 
 # ── 6. The container app ─────────────────────────────────────────────────────
 # Note what is NOT here: no password, no connection secret, no registry
-# credential. "Authentication=Active Directory Default" inside the container
-# resolves to the managed identity assigned in the next step.
+# credential.
+#
+# On authentication mode: "Active Directory Managed Identity" is used rather
+# than "Active Directory Default". The Default chain is convenient locally, but
+# inside a container it does not reliably resolve a system-assigned identity and
+# fails with a bare "Login failed ... State:240". Being explicit removes the
+# ambiguity - this container has exactly one identity and this names it.
 
 $connectionString = "Server=$SqlServer,1433;Database=$SqlDatabase;" +
-                    "Authentication=Active Directory Default;" +
+                    "Authentication=Active Directory Managed Identity;" +
                     "Encrypt=Yes;TrustServerCertificate=No;"
 
 Step "Container app: $AppName"
@@ -225,9 +253,24 @@ Write-Host "  Identity       $AppName  (principal $principalId)"
 Write-Host ""
 Write-Host "ONE STEP REMAINS. The container cannot read your database yet." -ForegroundColor Yellow
 Write-Host ""
-Write-Host "  1. Open deploy/grant-managed-identity.sql"
-Write-Host "  2. Replace <MANAGED-IDENTITY-NAME> with:  $AppName"
-Write-Host "  3. Run it against $SqlDatabase as a database admin"
+Write-Host "  Part 1 - the SQL grant" -ForegroundColor Cyan
+Write-Host "    Open deploy/grant-managed-identity.sql, replace"
+Write-Host "    <MANAGED-IDENTITY-NAME> with:  $AppName"
+Write-Host "    Run it against $SqlDatabase as a database admin."
+Write-Host ""
+Write-Host "  Part 2 - the Fabric item permission  (Fabric SQL Database only)" -ForegroundColor Cyan
+Write-Host "    Fabric has a permission layer above SQL. Without this the"
+Write-Host "    container authenticates and is then refused with"
+Write-Host "    'Verify the user has the Read item permission'."
+Write-Host ""
+Write-Host "    Fabric portal -> your workspace -> Manage access -> Add people"
+Write-Host "    or groups -> search '$AppName' -> Member"
+Write-Host ""
+Write-Host "    Then restart so it retries:"
+Write-Host "      az containerapp revision restart --name $AppName \"
+Write-Host "        --resource-group $ResourceGroup --revision <active-revision>"
+Write-Host ""
+Write-Host "    Skip part 2 for Azure SQL, SQL MI or SQL Server." -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "Then confirm the tool surface:" -ForegroundColor Cyan
 Write-Host "  python scripts/inspect_server.py --url https://$fqdn/mcp"
