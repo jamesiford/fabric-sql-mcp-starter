@@ -710,15 +710,17 @@ function ask() {
   if (question) askQuestion(question);
 }
 
-// A data agent cannot set session context, so the claim-driven RLS policy
-// filters it to zero rows. Warn up front rather than letting the agent lane
-// look broken when it is actually the security policy working as designed.
-// Only relevant once stage three is configured.
+// setup.py turns row-level security on by default. The policy is claim-driven,
+// and a local session presents no claim, so every lane correctly returns
+// nothing. Warn up front: an empty demo otherwise reads as a broken deployment
+// rather than the security policy doing exactly its job. This fires whenever
+// RLS is filtering us out, not just when stage three is configured - the people
+// who stopped after stage two are the most likely to hit it.
 fetch('/api/rls').then(r => r.json()).then(d => {
-  if (d && d.rls_blocking_agent) {
+  if (d && d.rls_enabled) {
     $('rlswarn').innerHTML =
       '<div class="blocked-box" style="margin:0 0 18px">' +
-      '<b>row-level security is filtering this connection to zero rows</b>' +
+      '<b>row-level security is filtering this connection to zero rows</b> ' +
       esc(d.hint || '') + '</div>';
   }
 }).catch(() => {});

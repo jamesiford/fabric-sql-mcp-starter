@@ -225,20 +225,20 @@ def stream_agent(q: Question) -> StreamingResponse:
 
 @app.get("/api/rls")
 def rls_state() -> JSONResponse:
-    """Report whether the fail-closed policy would filter the data agent to zero.
+    """Report whether the fail-closed policy is filtering this app to zero rows.
 
-    A data agent cannot set session context, so when the claim-driven predicate
-    is live it sees nothing. Surfacing that here stops the UI showing an empty
-    lane that looks like a failure when it is actually the security policy doing
-    exactly its job.
+    setup.py applies row-level security by default, which is the right default
+    for the database but surprises people running the demo locally: the policy
+    is claim-driven, a local unauthenticated session presents no claim, and so
+    every query correctly comes back empty. Without this warning that reads as a
+    broken deployment rather than the security policy doing its job.
 
-    Only meaningful once stage three is configured - with one lane there is
-    nothing to warn about.
+    This deliberately does NOT depend on stage three being configured. An earlier
+    version only checked when a data agent was present, which meant the people
+    most likely to hit the empty-demo case - anyone who stopped after stage two -
+    were the only ones who got no explanation.
     """
     from db import connect
-
-    if not data_agent.is_configured():
-        return JSONResponse({"rls_blocking_agent": False, "agent_configured": False})
 
     try:
         conn = connect()
@@ -247,19 +247,35 @@ def rls_state() -> JSONResponse:
         visible = int(cur.fetchone()[0])
         cur.close()
         conn.close()
-        return JSONResponse({
-            "agent_configured": True,
-            "rls_blocking_agent": visible == 0,
-            "visible_rows": visible,
-            "hint": (
-                "Row-level security is enabled, so the data agent lane will return "
-                "no rows - it cannot present a role claim. Run "
-                "sql/04-disable-row-level-security.sql to compare, then re-run 03 "
-                "afterwards."
-            ) if visible == 0 else None,
-        })
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=500)
+
+    agent_on = data_agent.is_configured()
+    blocked = visible == 0
+
+    if blocked:
+        hint = (
+            "Row-level security is on and this session presents no role claim, so "
+            "every lane correctly returns nothing - the data is there, the policy "
+            "is filtering it. To see data in the demo, run "
+            "sql/04-disable-row-level-security.sql, then re-run "
+            "sql/03-row-level-security.sql when you are finished."
+        )
+        if agent_on:
+            hint += (
+                " Note the data agent lane can never satisfy this policy: it has "
+                "no way to set session context, so stage three requires 04."
+            )
+    else:
+        hint = None
+
+    return JSONResponse({
+        "agent_configured": agent_on,
+        "rls_enabled": blocked,
+        "rls_blocking_agent": blocked and agent_on,
+        "visible_rows": visible,
+        "hint": hint,
+    })
 
 
 class SqlLookup(BaseModel):

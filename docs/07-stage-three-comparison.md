@@ -66,6 +66,22 @@ entitlement enforced at the database is reachable on one path and not the other.
 5. **Publish**, supplying a description. That description becomes the MCP tool
    description, so it decides when an orchestrator calls the agent at all
 
+Publishing is a portal action. There is no public REST call for it — you can
+create a Data Agent item and write its data sources and instructions through the
+Fabric items API, but the MCP endpoint stays dark until you press **Publish** in
+the UI.
+
+Until you do, `initialize` succeeds and everything looks healthy — the endpoint
+is real, and it will even report the agent's display name back to you. It is the
+first call that needs the published definition that fails:
+
+```json
+{"error":{"code":-32601,"message":"Failed to get publish info"}}
+```
+
+If you see that, the agent exists and your IDs are right. It simply has not been
+published yet.
+
 Then set in `.env`:
 
 ```ini

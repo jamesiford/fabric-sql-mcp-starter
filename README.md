@@ -233,8 +233,18 @@ else's data.
 python scripts/verify_rls.py
 ```
 
-Turn it off with `sql/04-disable-row-level-security.sql` and back on by re-running
-`03`.
+Toggle it with:
+
+```bash
+python scripts/rls.py --off     # see data in the demo app
+python scripts/rls.py --on      # put the policy back
+python scripts/rls.py           # report current state
+```
+
+> **The demo app will look empty until you do this.** `setup.py` applies the
+> policy by default. It is claim-driven, so a local session — which presents no
+> claim — correctly sees nothing. That is the design working, not a broken
+> install. The app shows a banner saying so.
 
 > **If you plan to try stage three**, note that a Fabric data agent cannot set
 > session context, so with this policy enabled it sees zero rows — by design.

@@ -85,6 +85,58 @@ obscurely.
 
 ---
 
+## The first thing that will look broken
+
+Ask a question and every answer comes back empty — "the total cannot be
+determined from these rows", or a single row of nulls.
+
+Nothing is broken. `setup.py` applies row-level security by default, that policy
+is **claim-driven and fail-closed**, and a local session presents no claim. The
+database is correctly showing you nothing. The 8,000 accounts are still there.
+
+The app detects this on load and shows a banner explaining it. To see data:
+
+```bash
+python scripts/rls.py --off
+```
+
+Put it back when you are done demonstrating:
+
+```bash
+python scripts/rls.py --on
+```
+
+Run it with no arguments to report the current state.
+
+This is a real property of the design rather than a rough edge: the filter sits
+in the database, below the API, so *nothing* that fails to present an identity
+can read the data — including your own demo app. That is the point. See
+[row-level security](03-row-level-security.md).
+
+## The "SQL DAB actually ran" panel says pending
+
+The trace panel recovers DAB's generated statement from the database's own query
+history. On Fabric SQL Database that is Query Store, which ships with
+`QUERY_CAPTURE_MODE = AUTO` — and AUTO deliberately skips queries that are cheap
+or infrequent, which is exactly what these are. The statement never gets
+recorded, so the panel stays on `pending`.
+
+Turn it on once per database:
+
+```sql
+ALTER DATABASE CURRENT SET QUERY_STORE = ON;
+ALTER DATABASE CURRENT SET QUERY_STORE (
+    QUERY_CAPTURE_MODE = ALL,
+    DATA_FLUSH_INTERVAL_SECONDS = 60
+);
+```
+
+Even then the statement appears on Query Store's flush interval, not instantly —
+allow up to a minute. Everything else on the page is unaffected; this panel is a
+teaching aid, and the answer above it never depends on it.
+
+---
+
 ## Next
 
 [Stage three](07-stage-three-comparison.md) adds an optional side-by-side

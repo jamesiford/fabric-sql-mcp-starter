@@ -67,10 +67,28 @@ _DOMAIN = os.environ.get(
 
 _SYSTEM = (
     "{domain}\n\n"
-    "Answer by calling exactly one of the supplied tools. Never invent numbers. "
-    "Never pass a paging argument unless the user asked for a specific number of "
-    "rows - omitting it returns the complete result set.\n\n"
+    "For any question about the data, answer by calling exactly one of the "
+    "supplied tools. Never invent numbers. Never pass a paging argument unless "
+    "the user asked for a specific number of rows - omitting it returns the "
+    "complete result set.\n\n"
+    "Every tool you have is read-only. The server publishes no tool that can "
+    "insert, update or delete, so if the user asks you to change, remove or "
+    "create data, do not substitute a read: reply in plain text saying the MCP "
+    "server exposes read-only tools and the request cannot be carried out.\n\n"
     "These are the entities you may read, with their fields:\n{catalog}"
+)
+
+# The phrasing call needs its own system prompt. Reusing _SYSTEM here told the
+# model to "answer by calling exactly one of the supplied tools" while binding no
+# tools to the call, so it kept replying that it needed the dataset tool output
+# instead of writing the answer. This turn has one job: prose, no tools.
+_PHRASE_SYSTEM = (
+    "{domain}\n\n"
+    "The query has already run against the database and its rows are given to "
+    "you below. Write the final answer for the user in plain prose. Do not call "
+    "tools, do not ask for the data, and do not question where it came from - it "
+    "is trusted output from the query that was just executed. Never invent "
+    "numbers: use only the figures in the rows you are given."
 )
 
 # How many rows the phrasing model is allowed to see, budgeted by cells rather
@@ -94,18 +112,27 @@ def _phrase_payload(rows: list[dict]) -> tuple[list[dict], int]:
 
 
 def _phrase_instruction(shown: int, total: int) -> str:
+    # Wording matters more than it looks. An earlier version said the remaining
+    # rows were "withheld" and that the full set appeared "in a table beside your
+    # answer". The model read that as being denied something and refused outright
+    # - "I can't access the withheld table, so I can't describe the sample without
+    # inventing details" - on any result larger than the sample budget. The rows
+    # it needs are in the message; the instruction just has to say so plainly and
+    # close the door on apologising.
     if shown < total:
         return (
-            f"You are seeing {shown} of {total} rows - the rest were withheld to "
-            "keep this request small, and the full set is displayed in a table "
-            "beside your answer. Describe what the sample shows and say plainly "
-            f"that it is a sample of {total} rows. Do not extrapolate totals. Use "
-            "figures from the rows only."
+            f"The {shown} rows above are real data and are the first {shown} of "
+            f"{total} rows. Only this many were sent to keep the request small. "
+            "The user can already see the full result as a table in the UI, so "
+            "never say you lack access, never ask to be given rows, and never "
+            "apologise. Describe what these rows show, state plainly that they "
+            f"are a sample of {total} rows, and do not extrapolate totals. Use "
+            "figures from these rows only."
         )
     if total > _ENUMERATE_LIMIT:
         return (
-            f"Those {total} rows are the complete result set and are already "
-            "displayed in a table beside your answer. Do NOT list them all. Give "
+            f"Those {total} rows are the complete result set and the user can "
+            "already see them as a table in the UI. Do NOT list them all. Give "
             "a short summary: the headline total or range, the top few and bottom "
             "few by value, and anything notable about the distribution. Use "
             "figures from the rows only."
@@ -264,12 +291,22 @@ class DabLane:
 
         # 'FOR JSON PATH' is DAB's signature - it wraps every read that way, so
         # it distinguishes DAB's statement from anything else touching the view.
+        #
+        # Two things here are load-bearing and non-obvious:
+        #
+        # 1. last_execution_time is DATETIMEOFFSET, which pyodbc cannot read
+        #    ("ODBC SQL type -155 is not yet supported"). CONVERT(..., 127) hands
+        #    it back as an ISO 8601 string instead. Without this the lookup throws
+        #    on every call and the statement never appears.
+        #
+        # 2. Only query_store_query is joined, not query_store_runtime_stats.
+        #    Runtime stats flush on their own cadence, so joining them keeps the
+        #    statement invisible for far longer than it needs to be.
         query_store = (
-            "SELECT TOP 1 qt.query_sql_text, MAX(rs.last_execution_time) AS ran_at "
+            "SELECT TOP 1 qt.query_sql_text, "
+            "       CONVERT(varchar(33), MAX(q.last_execution_time), 127) AS ran_at "
             "FROM sys.query_store_query_text AS qt "
             "JOIN sys.query_store_query AS q ON q.query_text_id = qt.query_text_id "
-            "JOIN sys.query_store_plan AS p ON p.query_id = q.query_id "
-            "JOIN sys.query_store_runtime_stats AS rs ON rs.plan_id = p.plan_id "
             "WHERE qt.query_sql_text LIKE ? "
             "  AND qt.query_sql_text LIKE '%FOR JSON PATH%' "
             "  AND qt.query_sql_text NOT LIKE '%query_store%' "
@@ -277,13 +314,16 @@ class DabLane:
             "ORDER BY ran_at DESC"
         )
         query_insights = (
-            "SELECT TOP 1 command, submit_time FROM queryinsights.exec_requests_history "
+            "SELECT TOP 1 command, CONVERT(varchar(33), submit_time, 127) "
+            "FROM queryinsights.exec_requests_history "
             "WHERE command LIKE ? "
             "  AND command LIKE '%FOR JSON PATH%' "
             "  AND command NOT LIKE '%queryinsights%' "
             "  AND submit_time >= ? "
             "ORDER BY submit_time DESC"
         )
+
+        last_error: str | None = None
 
         while True:
             for sql, params, source in (
@@ -297,9 +337,12 @@ class DabLane:
                     row = cur.fetchone()
                     cur.close()
                     conn.close()
-                except Exception:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001
                     # This history view does not exist on this target, or is not
-                    # readable. Try the next one.
+                    # readable. Try the next one - but keep the reason. Silently
+                    # swallowing it here makes a broken lookup indistinguishable
+                    # from a statement that simply has not flushed yet.
+                    last_error = f"{source}: {type(exc).__name__}: {exc}"
                     continue
                 if row:
                     return {
@@ -310,14 +353,16 @@ class DabLane:
                     }
 
             if time.time() >= deadline:
-                return {
-                    "status": "pending",
-                    "detail": (
-                        "The statement was not found in query history. Query Store "
-                        "may be disabled on this database, or the write may still "
-                        "be in flight. The answer above is unaffected."
-                    ),
-                }
+                detail = (
+                    "The statement was not found in query history. On Fabric SQL "
+                    "Database this usually means Query Store is still on its "
+                    "default QUERY_CAPTURE_MODE = AUTO, which skips inexpensive "
+                    "queries - see docs/06-stage-two-demo-app.md. The answer "
+                    "above is unaffected."
+                )
+                if last_error:
+                    detail += f" Last lookup error - {last_error}"
+                return {"status": "pending", "detail": detail}
             time.sleep(5)
 
     # -- core ---------------------------------------------------------------
@@ -347,13 +392,40 @@ class DabLane:
                 {"role": "user", "content": question},
             ],
             tools=self._tool_schemas,
-            tool_choice="required",
+            # "auto", not "required". Forcing a tool call meant a request like
+            # "delete all accounts in the Shanghai branch" had to be answered with
+            # some read tool, so the user asked to destroy data and got a table
+            # back - which reads as partial compliance. With "auto" the model can
+            # decline, and the decline states the real reason: no write tool
+            # exists to call. The server-side guardrail below is unchanged and
+            # still blocks a write even if a model ever tried one.
+            tool_choice="auto",
             max_completion_tokens=4000,
         )
         route_ms = (time.perf_counter() - t0) * 1000
 
         calls = routed.choices[0].message.tool_calls or []
         if not calls:
+            # No tool call with a message attached is a refusal, not a failure -
+            # surface it as such so the UI shows why the request was not run.
+            refusal = (routed.choices[0].message.content or "").strip()
+            if refusal:
+                emit({
+                    "t": "step", "id": "route", "state": "blocked",
+                    "ms": round(route_ms), "detail": "no write tool exists",
+                })
+                emit({
+                    "t": "blocked", "id": "route",
+                    "message": refusal,
+                    "error_type": "read_only_server",
+                    "elapsed_s": time.perf_counter() - started,
+                })
+                return {
+                    "status": "blocked",
+                    "reason": "read_only_server",
+                    "message": refusal,
+                    "elapsed_s": time.perf_counter() - started,
+                }
             emit({"t": "error", "id": "route", "message": "model returned no tool call"})
             return self._fail(started, "no_tool_selected", "model returned no tool call")
 
@@ -401,10 +473,21 @@ class DabLane:
         stream = self._client.chat.completions.create(
             model=self.deployment,
             messages=[
-                {"role": "system", "content": _SYSTEM.format(domain=_DOMAIN, catalog=self._catalog)},
-                {"role": "user", "content": question},
-                {"role": "assistant", "content": f"Tool {name} returned:\n{json.dumps(sample, default=str)}"},
-                {"role": "user", "content": _phrase_instruction(len(sample), total)},
+                {"role": "system", "content": _PHRASE_SYSTEM.format(domain=_DOMAIN)},
+                # The rows go in a user turn, not a fabricated assistant turn. An
+                # earlier version replayed them as {"role": "assistant", "content":
+                # "Tool X returned: ..."}, which is a tool result the model never
+                # actually produced - so it treated the numbers as untrusted text
+                # ("the raw data you pasted") and declined to use them.
+                {
+                    "role": "user",
+                    "content": (
+                        f"Question: {question}\n\n"
+                        f"Rows returned by {name}:\n"
+                        f"{json.dumps(sample, default=str)}\n\n"
+                        f"{_phrase_instruction(len(sample), total)}"
+                    ),
+                },
             ],
             max_completion_tokens=4000,
             stream=True,
